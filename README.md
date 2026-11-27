@@ -1,177 +1,140 @@
 # Retention
 
-Retention is a TypeScript library for scheduling reviews of material someone has already studied. It takes a review policy, a history of practice observations and the current time, then calculates what is due and when to review it again.
+**Deterministic review scheduling for learning and long-term retention.**
 
-A flashcard application can use it to schedule vocabulary practice. A programming course can use it to recommend another exercise on pointers after a successful retrieval. The application supplies the observations and stores the results.
+Retention determines what to review, when to review it, and when further practice may be needed. It uses previous learning observations and configurable review policies to calculate spaced retrieval schedules, prioritize due material and recommend targeted practice.
 
-Retention is designed to run in an application without a separate server, database, model provider or account. Its calculations are deterministic: the same validated history, policy, algorithm revision and clock produce the same result.
+Use it to schedule vocabulary reviews, revisit mathematical concepts, reinforce programming skills or build review systems into learning applications. Retention works without a server, database, model provider or account. Applications retain ownership of their learning records and assessment decisions.
 
-> Development status: pre-implementation. This README describes the planned first release, `@0xbuff/retention@0.0.1`. The package is not yet available to install.
+> Status: in development. The design below describes the planned first release, `@0xbuff/retention@0.0.1`. Installation and usage instructions will accompany the implemented package.
 
-## What Retention calculates
+## How it works
 
-- Review intervals and due dates based on a configurable policy.
-- Retry dates and support recommendations when practice is unsuccessful.
-- Delayed retrieval probes and continued reviews after the final interval.
-- An ordered queue of due concepts, with optional weights and concept relationships.
-- Advisory candidate readiness from evidence an application has independently admitted, when an eligibility policy is configured.
+Suppose a learner successfully recalls a concept on Monday. A review policy can schedule the next attempt for Tuesday, then increase the interval after each successful review. If the learner struggles, the policy can schedule an earlier retry or recommend additional practice.
 
-The scheduler does not inspect answers, authenticate learners, award grades or certify mastery. It does not send reminders. Applications decide how and when to present a recommendation and remain responsible for their own records.
+With an example interval policy of 1, 3, 7, 16 and 35 elapsed days, a learner who passes each review when due would follow this schedule:
 
-## How review scheduling works
+| Retrieval succeeds on | Next review |
+| --- | --- |
+| Day 0 | Day 1 |
+| Day 1 | Day 4 |
+| Day 4 | Day 11 |
+| Day 11 | Day 27 |
+| Day 27 | Day 62 |
+| Day 62 | After the configured maintenance interval |
 
-A policy specifies the intervals between reviews, the retry and maintenance intervals, the support threshold and the response to a missed long probe.
+Practicing early does not advance an existing interval. A missed review follows the configured retry, restart and support rules. Applications choose their own intervals and maintenance policy; the example is not a universal learning standard.
 
-For example, consider a policy with intervals of 1, 3, 7, 16 and 35 days. If a learner passes each review exactly when it is due, an initial successful practice on day 0 produces the following schedule:
+## Capabilities
 
-| Successful retrieval | Next interval | Next review |
-| --- | ---: | ---: |
-| Day 0 | 1 day | Day 1 |
-| Day 1 | 3 days | Day 4 |
-| Day 4 | 7 days | Day 11 |
-| Day 11 | 16 days | Day 27 |
-| Day 27 | 35 days | Day 62 |
-| Day 62 | Maintenance interval | Policy-dependent |
+- Configurable spaced retrieval, retry intervals and maintenance reviews.
+- Support recommendations and delayed retrieval probes.
+- Due-review ranking across concepts, with optional priority weights and relationships.
+- Elapsed-time or local-calendar scheduling using explicit timezone rules.
+- Replay of duplicated, reordered, corrected, revoked or deleted observations.
+- Optional advisory readiness based on independently admitted evidence.
 
-A successful attempt before the due time does not advance an existing interval. An unsuccessful attempt can restart progression or trigger support according to the policy. The example intervals are configurable; they are not a universal learning standard.
-
-Retention supports elapsed days of exactly 86,400,000 milliseconds and a local-calendar profile with caller-supplied timezone transition rules. The latter lets an application preserve local review times across daylight-saving changes without depending on the timezone database installed on a particular machine.
+Calculations are reproducible for the same validated history, policy, algorithm revision and clock. Retention does not inspect answers, authenticate learners, issue grades, certify mastery or deliver notifications.
 
 ## Architecture
 
-### Application boundary
+The application records practice, supplies a policy and calls Retention with an explicit clock. Retention reconciles the history and calculates review projections. The application decides how to present and store the results.
 
 ```mermaid
 flowchart TD
     subgraph Host["Consumer application"]
-        A["Practice observations"]
-        B["Admitted credited evidence (optional)"]
-        C["Event history and lifecycle controls"]
-        D["Review policy and explicit clock"]
-        L["Official academic records (if applicable)"]
-        V["Review interface and reminders"]
+        P["Practice observations"]
+        E["Admitted evidence (optional)"]
+        H["Event history and lifecycle controls"]
+        T["Review policy and clock"]
+        V["Review interface and storage"]
+        P --> H
+        E --> H
     end
 
-    A --> C
-    B --> C
-    B --> L
-    C --> R
-    D --> R
-
-    subgraph Engine["Retention"]
-        R["Validate and reconcile events"]
+    subgraph Core["Retention"]
+        R["Validate and reconcile"]
         S["Calculate practice schedule"]
-        E["Calculate eligible-only readiness"]
+        C["Calculate eligible-only readiness (optional)"]
         Q["Rank due concepts"]
         R --> S
-        R --> E
+        R -->|Admitted evidence only| C
         S --> Q
     end
 
+    H --> R
+    T --> R
+    T --> S
+    T --> C
+    T --> Q
     Q --> V
-    E --> V
+    C --> V
 ```
 
-The caller supplies a complete, scoped history with stable event IDs and a durable sequence. Retention validates the input, reconstructs the active observations and returns projections for the caller to store or display. The engine has no path for writing to an academic ledger.
+### Replay
 
-### Event replay
-
-Applications may receive an event more than once or discover that an earlier observation was incorrect. Corrections, revocations and deletion controls therefore form part of the replay contract.
+Review histories can arrive out of order. An application may also need to correct a previous result or remove a learner's data. Retention uses stable event identities and a durable sequence to reconstruct the active observations before calculating a schedule.
 
 ```mermaid
 flowchart TD
-    A["Complete scoped event history"] --> B["Validate schema, scope and bounds"]
+    A["Complete scoped event history"] --> B["Validate schema, scope and limits"]
     B --> C{"Valid input?"}
     C -->|No| X["Typed error"]
-    C -->|Yes| D["Deduplicate and check identities"]
+    C -->|Yes| D["Deduplicate and check event identities"]
     D --> E["Resolve corrections and revocations"]
     E --> F["Apply deletion controls"]
     F --> G["Order surviving observations"]
     G --> H["Exclude future-effective observations"]
     H --> I["Rebuild practice projection"]
-    H --> J["Rebuild eligible-only candidate projection"]
+    H --> J["Rebuild candidate projection if configured"]
+    D -. Integrity failure .-> X
+    E -. Integrity failure .-> X
 ```
 
-An identical duplicate has no effect. Conflicting identities and invalid correction chains produce errors. A correction replaces an earlier credited decision; it does not create an additional retrieval success. A deletion suppresses the affected history during replay, including late deliveries.
+Identical duplicate events have no effect. Conflicting identities and invalid correction chains produce typed failures. A corrected decision replaces the original observation instead of counting as another success. Deletion controls suppress affected history during replay; the application remains responsible for physical erasure and preventing obsolete histories from returning.
 
-Full replay is the reference calculation. The planned advance operation checks the previous projection identity and complete event prefix before rebuilding with new events. It does not trust an opaque snapshot or silently apply a different policy. Physical data erasure and protection against obsolete history generations remain the application's responsibility.
+Full replay is the reference calculation. The initial advance operation verifies the previous projection identity and complete event prefix before rebuilding. Policy changes require explicit replay.
 
-### Practice and candidate readiness
+### Readiness and evidence
+
+Practice observations can influence due dates and support recommendations. Applications that track independently assessed work can also supply admitted evidence under a separate eligibility policy.
 
 ```mermaid
 flowchart LR
     P["Ungraded practice"] --> S["Practice schedule"]
     A["Host-admitted credited observations"] --> S
-    A --> C["Eligible-only candidate calculation"]
+    A --> C["Eligible-only calculation"]
     K["Eligibility policy"] --> C
     S --> D["Due dates and support"]
     C --> R["Advisory candidate readiness"]
 ```
 
-An application that only needs spaced reviews can omit the eligibility policy. When configured, the candidate calculation considers qualifying successes, distinct sessions, elapsed time between qualifying events and the policy's freshness, difficulty and hint constraints. Practice observations do not contribute to the eligible-only streak.
+An eligibility policy might require three fresh successes in at least two sessions over a minimum span of 24 hours. Only qualifying admitted observations start and extend that streak. A local study tool can omit this policy entirely.
 
-For example, a policy can require three fresh successes across two sessions with at least 24 hours between the first and last qualifying observations. A successful practice attempt from the previous week cannot start that clock unless it qualifies as admitted evidence. The application still decides whether any formal credit is warranted.
+Retention cannot establish whether evidence is authentic. The application admits evidence and makes any official assessment or credit decision independently.
 
 ## Planned API
 
-The initial package will expose a small set of typed operations through its root ESM entry point. The specification governs their behavior; exact usage examples will accompany the implementation.
-
 | Operation | Purpose |
 | --- | --- |
-| `validatePolicy` | Validate and normalize a versioned review policy. |
-| `validateEvents` | Validate event shape and scope before lifecycle reconciliation. |
-| `rebuildReview` | Reconstruct review and optional candidate projections from complete history. |
-| `advanceReview` | Rebuild after verifying the previous identity and complete event prefix. |
-| `evaluateReadiness` | Calculate advisory readiness without bypassing event reconciliation. |
-| `scheduleDue` | Select and rank due concepts using compatible projections. |
-| `explainReview` | Return structured reasons for a review recommendation. |
+| `validatePolicy` | Validate and normalize a versioned policy. |
+| `validateEvents` | Validate event shape and scope. |
+| `rebuildReview` | Reconstruct review projections from complete history. |
+| `advanceReview` | Verify the prior identity and event prefix, then rebuild with new events. |
+| `evaluateReadiness` | Calculate advisory readiness from reconciled eligible evidence. |
+| `scheduleDue` | Select and rank due concepts. |
+| `explainReview` | Return structured reasons for a recommendation. |
 
-Expected input failures return typed results. The engine accepts bounded data, rejects unsupported schema versions and keeps raw learner answers and transcripts out of its diagnostics.
+The [review scheduling specification](https://github.com/0xbuffdev/context/blob/main/repos/retention/specs/0001-review-scheduling.md) defines the event schemas, policy fields, transition rules, resource limits and error behavior.
 
-## Source layout
+## Development
 
-The repository will grow through the implementation tickets. The planned modules have the following responsibilities:
+The source is planned as a single TypeScript package with a platform-neutral ESM entry point and type declarations. The development toolchain uses pnpm, strict TypeScript, Vitest and tsdown. The core requires no runtime services.
 
-| Directory | Responsibility |
-| --- | --- |
-| `src/contracts/` | Event, policy, projection and result types. |
-| `src/validation/` | Runtime validation and resource limits. |
-| `src/time/` | Elapsed and calendar arithmetic. |
-| `src/events/` | Identity, ordering and lifecycle controls. |
-| `src/replay/` | Reconciliation and projection orchestration. |
-| `src/scheduling/` | Interval progression, support and delayed probes. |
-| `src/readiness/` | Qualification, streaks and candidate readiness. |
-| `src/priority/` | Due selection and ranking. |
-| `src/explanation/` | Structured reason codes. |
-| `tests/` | Unit, integration, conformance, property and adversarial tests. |
-| `examples/` | Independent practice and admitted-evidence consumers. |
+See the [source architecture](https://github.com/0xbuffdev/context/blob/main/repos/retention/architecture.md) for the repository layout, module dependencies, build configuration and testing conventions. The [implementation tickets](https://github.com/0xbuffdev/context/blob/main/repos/retention/tickets.md) track progress toward the first release, including independent Node.js and browser consumer checks.
 
-The source will use strict TypeScript, pnpm, Vitest and tsdown. The public package will target a platform-neutral ESM build with TypeScript declarations. Supported runtime versions and installation instructions will be documented when verified.
-
-## Implementation and release
-
-The first release requires the seven implementation tickets in this order:
-
-```mermaid
-flowchart TD
-    A["RV-I01: Foundation, policy and time"] --> B["RV-I05: Event contracts"]
-    B --> C["RV-I02: Lifecycle reconciliation"]
-    C --> D["RV-I06: Eligibility policy"]
-    D --> E["RV-I03: Scheduling and readiness"]
-    E --> F["RV-I07: Due ranking"]
-    F --> G["RV-I04: Release-candidate conformance"]
-    G --> H["Maintainer approval and publication"]
-```
-
-RV-I04 covers the complete library, including the applicable acceptance scenarios, security and resource limits, independent Node.js and browser consumers, and verification of the exact npm archive. Publication requires separate approval. Integrating Retention into an existing application is separate work.
-
-The project design and implementation plan live in the [engineering context repository](https://github.com/0xbuffdev/context/tree/main/repos/retention):
-
-- [Architecture decision](https://github.com/0xbuffdev/context/blob/main/repos/retention/adr/0001-deterministic-scheduling.md)
-- [Review scheduling specification](https://github.com/0xbuffdev/context/blob/main/repos/retention/specs/0001-review-scheduling.md)
-- [Source architecture and tooling](https://github.com/0xbuffdev/context/blob/main/repos/retention/architecture.md)
-- [Implementation tickets](https://github.com/0xbuffdev/context/blob/main/repos/retention/tickets.md)
+To contribute before the first release, review the [architecture decision](https://github.com/0xbuffdev/context/blob/main/repos/retention/adr/0001-deterministic-scheduling.md) and [implementation plan](https://github.com/0xbuffdev/context/tree/main/repos/retention), then use the repository's [issue tracker](https://github.com/0xbuffdev/retention/issues) for questions or proposed changes.
 
 ## License
 
-MIT is the proposed license. Reuse rights depend on maintainer approval and the license file included with the source.
+MIT is the proposed license, pending approval and inclusion of the license file.
